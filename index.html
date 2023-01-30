@@ -1,0 +1,294 @@
+<html>
+
+<head>
+
+    <script src="https://code.jquery.com/jquery-3.3.1.min.js"></script>
+
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
+
+    <!-- Require the peer dependencies of facemesh. -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core@2.6.0/dist/tf-core.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-converter@2.6.0/dist/tf-converter.min.js"></script>
+
+    <!-- You must explicitly require a TF.js backend if you're not using the tfs union bundle. -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-wasm@2.6.0/dist/tf-backend-wasm.min.js"></script>
+
+    <!-- Pretrained facemesh model. -->
+    <script
+        src="https://cdn.jsdelivr.net/npm/@tensorflow-models/face-landmarks-detection@0.0.2/dist/face-landmarks-detection.min.js"></script>
+
+    <!-- https://medium.com/swlh/how-to-access-webcam-and-take-picture-with-javascript-b9116a983d78 -->
+    <script type="text/javascript" src="https://unpkg.com/webcam-easy/dist/webcam-easy.min.js"></script>
+
+</head>
+
+<body>
+
+    <div id="webcam-control"> 
+        <span id="webcam-caption"></span>
+    </div>
+
+    <div id="video-container" class="container" style="display: none;">
+        <video id="webcam" autoplay playsinline width="640" height="480"></video>
+        <div>
+            <button id="start-capture" class="btn"><i class="fa fa-camera fa-3x fa-fw"></i></button>
+            <button id="capture-running" class="btn" style="display: none;"><i
+                    class="fa fa-refresh fa-spin fa-3x fa-fw"></i></button>
+            <span id="info-text" style="display: none;">Espere</span>
+        </div>        
+        <div id="result">
+            <img id="expression" style="height: 200px; width: 200px;"/>   
+            <div style="height: 200px; width: 200px; display: inline-block;" >
+                <img id="capture" style="height: 100%; width: 100%; object-fit: contain;"/>       
+            </div>  
+        </div>
+        <canvas id="canvas" class="d-none" style="display:none;" ></canvas>
+    </div>
+
+    <script>
+        const SMILE = 1
+        const OPEN_MOUTH = 2
+        const BLINK_LEFT_EYE = 3
+        const BLINK_RIGHT_EYE = 4
+        const SERIOUS = 5
+
+        const webcamElement = document.getElementById('webcam');
+        const canvasElement = document.getElementById('canvas');
+        const webcam = new Webcam(webcamElement, 'user', canvasElement);
+
+        let model = null;
+        let cameraFrame = null;
+        let running = false
+        let timeout = null;
+        let expessions = [
+            { expession: BLINK_LEFT_EYE, image_base: "lefteye.png", image_fail: "lefteye_fail.png", image_success: "lefteye_mark.png", msg:"Cierra el Ojo IZQUIERDO"},
+            { expession: BLINK_RIGHT_EYE, image_base: "righteye.png", image_fail: "righteye_fail.png", image_success: "righteye_mark.png", msg:"Cierra el Ojo DERECHO" },
+            { expession: SERIOUS, image_base: "serius.png", image_fail: "serius_fail.png", image_success: "serius_mark.png", msg:"Cara seria"},
+            { expession: SMILE, image_base: "smile.png", image_fail: "smile_fail.png", image_success: "smile_mark.png", msg:"Sonrie" }
+        ]
+        var currentTest = 0 
+        var isActive = true
+        function nextTest() {
+            currentTest ++;
+            currentTest = currentTest % expessions.length
+            let test = expessions[currentTest]   
+            $('#expression').attr('src', test.image_base)         
+            $('#webcam-caption').text(test.msg)
+            timeout = setTimeout(() => {
+                    testResult(false)
+                    isActive = false 
+                }, 5000);
+            isActive = true
+        }
+
+        function testResult(success, image) {
+            let test = expessions[currentTest]
+            let id = "test" + test.expession
+
+            if(success) {
+                $('#expression').attr('src', test.image_success)
+                $('#capture').attr('src', image)
+            }
+            else             
+                $('#expression').attr('src', test.image_fail)
+
+            clearTimeout(timeout);             
+            setTimeout(() => {
+                nextTest();
+            }, 2000);
+        }
+
+        webcam.start().then(result => {           
+            $("#video-container").show();
+            console.log("webcam started");
+            startCapture();
+        })
+        .catch(err => {
+            console.log(err);
+        });
+
+        $("#start-capture").click(function () {
+            startCapture();
+        });
+
+        $("#webcam-switch").change(function () {
+            if (this.checked) {
+                webcam.start()
+                    .then(result => {
+                        $('#webcam-caption').text('Click to Stop Camera');
+                        $("#video-container").show();
+                        console.log("webcam started");
+                    })
+                    .catch(err => {
+                        console.log(err);
+                    });
+            }
+            else {
+                stopCapture();
+                webcam.stop();
+                $('#webcam-caption').text('Click to Start Camera');
+                $("#video-container").hide();
+                console.log("webcam stopped");
+            }
+        });
+
+        async function stopCapture() {
+            if (running) {
+                $("#capture-running").hide();
+                $("#start-capture").show();
+                $("#info-text").hide();
+                running = false;
+                if (cameraFrame != null) {
+                    cancelAnimationFrame(cameraFrame);
+                }
+            }
+        }
+
+        async function startCapture() {
+            $("#start-capture").hide();
+            $('#info-text').text('Descargando modelo, espere...');
+            $("#info-text").show(); 
+
+            faceLandmarksDetection.load(
+                faceLandmarksDetection.SupportedPackages.mediapipeFacemesh,
+                { maxFaces: 1 }
+
+            ).then(mdl => {
+                $("#capture-running").show();
+                $('#info-text').text('Listo.');
+                $('#webcam-caption').text(expessions[currentTest].msg)
+                $('#expression').attr('src', expessions[currentTest].image_base)
+                model = mdl;
+                cameraFrame = detectKeyPoints();
+                timeout = setTimeout(() => {
+                    testResult(false)
+                    isActive = false 
+                }, 5000);
+                running = true;
+            }).catch(err => {
+                console.log(err);
+                stopCapture();
+            });
+        }
+
+        async function main() {
+            await setupFaceLandmarkDetection()
+        }
+
+        async function setupFaceLandmarkDetection() {
+            await tf.setBackend('wasm');
+        }
+
+        async function detectKeyPoints() {
+            const predictions = await model.estimateFaces({
+                input: document.querySelector("video"),
+                returnTensors: false,
+                flipHorizontal: true,
+                predictIrises: true
+            });
+
+            if (predictions.length > 0) {
+                const keypoints = predictions[0].scaledMesh;
+                let test = expessions[currentTest]
+                if (detectExpression(keypoints, test.expession) && isActive) {
+                    let picture = webcam.snap();
+                    isActive = false
+                    testResult(true, picture)
+                }
+            }
+            cameraFrame = requestAnimationFrame(detectKeyPoints);
+        }
+
+        function detectExpression(keypoints, expession) {
+
+            switch (expession) {
+                case SMILE: {
+                    return detectSmile(keypoints)
+                    break
+                }
+
+                case OPEN_MOUTH: {
+                    return detectOpenMouth(keypoints)
+                    break
+                }
+
+                case BLINK_LEFT_EYE: {
+                    return detectLeftEyeBlink(keypoints) && !detectRightEyeBlink(keypoints) 
+                    break
+                }
+
+                case BLINK_RIGHT_EYE: {
+                    return detectRightEyeBlink(keypoints) && !detectLeftEyeBlink(keypoints)
+                    break
+                }
+
+                case SERIOUS: {
+                    return detectSerious(keypoints)
+                    break
+                }
+            }
+        }
+
+        function detectLeftEyeBlink(keypoints) {
+            leftEye_l = 263
+            leftEye_r = 362
+            leftEye_t = 386
+            leftEye_b = 374
+            aL = euclidean_dist(keypoints[leftEye_t][0], keypoints[leftEye_t][1], keypoints[leftEye_b][0], keypoints[leftEye_b][1]);
+            bL = euclidean_dist(keypoints[leftEye_l][0], keypoints[leftEye_l][1], keypoints[leftEye_r][0], keypoints[leftEye_r][1]);
+            eyeLeft = aL / (2 * bL);
+            return (eyeLeft < 0.1)
+        }
+
+        function detectRightEyeBlink(keypoints) {
+            rightEye_l = 133
+            rightEye_r = 33
+            rightEye_t = 159
+            rightEye_b = 145
+
+            aR = euclidean_dist(keypoints[rightEye_t][0], keypoints[rightEye_t][1], keypoints[rightEye_b][0], keypoints[rightEye_b][1]);
+            bR = euclidean_dist(keypoints[rightEye_l][0], keypoints[rightEye_l][1], keypoints[rightEye_r][0], keypoints[rightEye_r][1]);
+            eyeRight = aR / (2 * bR);
+            return (eyeRight < 0.1)
+        }
+
+        function detectOpenMouth(keypoints) {
+            face_t = 168
+            face_b = 1
+            open_t = 15
+            open_b = 12
+
+            m = euclidean_dist(keypoints[open_t][0], keypoints[open_t][1], keypoints[open_b][0], keypoints[open_b][1]);
+            f = euclidean_dist(keypoints[face_t][0], keypoints[face_t][1], keypoints[face_b][0], keypoints[face_b][1]);
+            earO = m / f
+            return (earO > 0.70)
+
+        }
+
+        function detectSmile(keypoints) {
+            mouth_l = 287
+            mouth_r = 57
+            face_l = 345
+            face_r = 227
+
+            m = euclidean_dist(keypoints[mouth_l][0], keypoints[mouth_l][1], keypoints[mouth_r][0], keypoints[mouth_r][1]);
+            f = euclidean_dist(keypoints[face_l][0], keypoints[face_l][1], keypoints[face_r][0], keypoints[face_r][1]);
+            earM = m / f
+            return ((earM > 0.60) && !detectOpenMouth(keypoints))
+        }
+
+        function detectSerious(keypoints) {
+            return !detectOpenMouth(keypoints) && !detectSmile(keypoints) && !detectRightEyeBlink(keypoints) && !detectLeftEyeBlink(keypoints)
+        }
+
+        function euclidean_dist(x1, y1, x2, y2) {
+            return Math.sqrt(Math.pow((x1 - x2), 2) + Math.pow((y1 - y2), 2));
+        };
+
+        main();
+
+    </script>
+
+</body>
+
+</html>
